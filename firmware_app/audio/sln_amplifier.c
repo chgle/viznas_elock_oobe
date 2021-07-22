@@ -528,7 +528,7 @@ amplifier_status_t SLN_AMP_Init(volatile uint8_t *pu8BuffNum)
     pu8BufferPool   = pu8BuffNum;
     s_DmaTxComplete = xEventGroupCreate();
 
-    BOARD_Codec_I2C_Init();
+    //B36932 BOARD_Codec_I2C_Init();
 
     BOARD_SAI_Init(saiInitHandle);
 

@@ -13,6 +13,7 @@
 #else
 #include "i2c.h"
 #endif
+#include "board.h" //B36932
 /*******************************************************************************
  * Definitions
  ******************************************************************************/
@@ -35,6 +36,10 @@
  */
 status_t CODEC_I2C_Init(void *handle, uint32_t i2cInstance, uint32_t i2cBaudrate, uint32_t i2cSourceClockHz)
 {
+#if 1 //B36932
+	//BOARD_LPI2C_Init(BOARD_CODEC_I2C_BASEADDR, BOARD_CODEC_I2C_CLOCK_FREQ);
+	return kStatus_Success;
+#else
     hal_i2c_master_config_t masterConfig;
 
     masterConfig.enableMaster = true;
@@ -46,6 +51,7 @@ status_t CODEC_I2C_Init(void *handle, uint32_t i2cInstance, uint32_t i2cBaudrate
     return HAL_I2cMasterInit_FreeRTOS((hal_i2c_master_handle_t *)handle, &masterConfig);
 #else
     return HAL_I2cMasterInit((hal_i2c_master_handle_t *)handle, &masterConfig);
+#endif
 #endif
 }
 
@@ -82,6 +88,10 @@ status_t CODEC_I2C_Send(void *handle,
                         uint8_t *txBuff,
                         uint8_t txBuffSize)
 {
+#if 1 //B36932
+    return BOARD_LPI2C_Send(BOARD_CODEC_I2C_BASEADDR, deviceAddress, subAddress, subaddressSize, (uint8_t *)txBuff,
+                            txBuffSize);
+#else
     hal_i2c_master_transfer_t masterXfer;
 
     masterXfer.slaveAddress   = deviceAddress;
@@ -96,6 +106,7 @@ status_t CODEC_I2C_Send(void *handle,
     return HAL_I2cMasterTransfer_FreeRTOS((hal_i2c_master_handle_t *)handle, &masterXfer);
 #else
     return HAL_I2cMasterTransferBlocking((hal_i2c_master_handle_t *)handle, &masterXfer);
+#endif
 #endif
 }
 
@@ -117,6 +128,9 @@ status_t CODEC_I2C_Receive(void *handle,
                            uint8_t *rxBuff,
                            uint8_t rxBuffSize)
 {
+#if 1 //B36932
+	return BOARD_LPI2C_Receive(BOARD_CODEC_I2C_BASEADDR, deviceAddress, subAddress, subaddressSize, rxBuff, rxBuffSize);
+#else
     hal_i2c_master_transfer_t masterXfer;
 
     masterXfer.slaveAddress   = deviceAddress;
@@ -131,5 +145,6 @@ status_t CODEC_I2C_Receive(void *handle,
     return HAL_I2cMasterTransfer_FreeRTOS((hal_i2c_master_handle_t *)handle, &masterXfer);
 #else
     return HAL_I2cMasterTransferBlocking((hal_i2c_master_handle_t *)handle, &masterXfer);
+#endif
 #endif
 }

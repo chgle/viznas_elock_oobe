@@ -28,6 +28,7 @@ static uint8_t s_offlineAudioPlayerCurrentStatus    = 0xFF;
 void offline_audio_task(void *arg)
 {
     EventBits_t offlineAudioEventBits;
+    amplifier_status_t amp_return;
 
     const clock_audio_pll_config_t audioPllConfig = {
                 .loopDivider = 32,  /* PLL loop divider. Valid range for DIV_SELECT divider value: 27~54. */
@@ -39,6 +40,8 @@ void offline_audio_task(void *arg)
     CLOCK_InitAudioPll(&audioPllConfig);
 
     streamer_pcm_init();
+
+    SLN_AMP_SetVolume(100); //B36932
 
     // Play offline alert audio if needed
     s_offlineAudioEventGroup = xEventGroupCreate();
@@ -59,10 +62,18 @@ void offline_audio_task(void *arg)
                 ** This needs to be set to ensure that the resume UX shows alerting when offline
                 */
 #if BOARD_AUDIO_CODEC_TFA9894
+#if 1
+                amp_return = SLN_AMP_Write((uint8_t *)welcome_female_friendly_wav, welcome_female_friendly_wav_len);
+                if(amp_return)
+                {
+                	configPRINTF(("SLN_AMP_Write failure ...\r\n"));
+                }
+#else
                 SLN_AMP_SetVolume(100);
                 SLN_AMP_WriteBlocking((uint8_t *)welcome_female_friendly_wav,
                         MIN(welcome_female_friendly_wav_len, AUDIO_LENGTH_MAX));
                 SLN_AMP_SetVolume(0);
+#endif
 #endif
             }
             if ((1 << AUDIO_REGISTRATION_FAILED) & offlineAudioEventBits)
@@ -72,9 +83,17 @@ void offline_audio_task(void *arg)
                 ** This needs to be set to ensure that the resume UX shows alerting when offline
                 */
 #if BOARD_AUDIO_CODEC_TFA9894
+#if 1
+                amp_return = SLN_AMP_Write((uint8_t *)regFailed_wav, regFailed_wav_len);
+                if(amp_return)
+                {
+                	configPRINTF(("SLN_AMP_Write failure ...\r\n"));
+                }
+#else
                 SLN_AMP_SetVolume(100);
                 SLN_AMP_WriteBlocking((uint8_t *)regFailed_wav, MIN(regFailed_wav_len, AUDIO_LENGTH_MAX));
                 SLN_AMP_SetVolume(0);
+#endif
 #endif
             }
             if ((1 << AUDIO_REGISTRATION_SUCCESSFUL) & offlineAudioEventBits)
@@ -84,9 +103,17 @@ void offline_audio_task(void *arg)
                 ** This needs to be set to ensure that the resume UX shows alerting when offline
                 */
 #if BOARD_AUDIO_CODEC_TFA9894
+#if 1
+                amp_return = SLN_AMP_Write((uint8_t *)regSuccessful_wav, regSuccessful_wav_len);
+                if(amp_return)
+                {
+                	configPRINTF(("SLN_AMP_Write failure ...\r\n"));
+                }
+#else
                 SLN_AMP_SetVolume(100);
                 SLN_AMP_WriteBlocking((uint8_t *)regSuccessful_wav, MIN(regSuccessful_wav_len, AUDIO_LENGTH_MAX));
                 SLN_AMP_SetVolume(0);
+#endif
 #endif
             }
 

@@ -24,7 +24,7 @@
 
 #if RTVISION_BOARD
     #define WIFI_ENABLE      0
-    #define VOICE_PROMPT     0
+    #define VOICE_PROMPT     1
 	#define SDK_SAI_BASED_COMPONENT_USED 1
 	#include "board_rtvision.h"
 #elif RT106F_ELOCK_BOARD
