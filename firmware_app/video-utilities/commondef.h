@@ -264,7 +264,7 @@ typedef struct
 #define FEATURE_BORDER_ROUTER 0
 
 /* Flash Database related */
-#define FEATUREDATA_MAX_COUNT 100
+#define FEATUREDATA_MAX_COUNT 4096
 
 #define FLASH_OK  0
 #define FLASH_ERR 1
@@ -336,7 +336,7 @@ typedef union
 #if FLASH_TYPE == HYPER_FLASH
     unsigned char raw[FEATUREDATA_FLASH_PAGE_SIZE * 4]; // 2-->4
 #else
-    unsigned char raw[FEATUREDATA_FLASH_PAGE_SIZE * 8]; // 4-->8
+    unsigned char raw[FEATUREDATA_FLASH_PAGE_SIZE * 4]; // 4-->8
 #endif
 } FeatureItem; // 1kB->2kB
 
