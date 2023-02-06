@@ -110,11 +110,16 @@ void CfgData_GetDefault(sln_cfg_data_t *cfg)
             .liveness_mode              = LIVENESS_MODE_ON,
             .display_mode               = DISPLAY_MODE_RGB,
             .detect_resolution_mode     = DETECT_RESOLUTION_VGA,
+#if RTVISION_BOARD
+            .output_mode                = DISPLAY_USB,
+#elif RT106F_ELOCK_BOARD
             .output_mode                = DISPLAY_LCD,
+#endif
             .display_interface          = DISPLAY_INTERFACE_INFOBAR,
             .app_type                   = APP_TYPE_ELOCK_LIGHT,
             .audio_amp_calibration_state= 0,
             .low_power_mode             = LOW_POWER_MODE_OFF,
+            .algo_start_mode            = ALGO_START_MODE_AUTO,
     };
 
     default_app_data.camera_ir_pulse_width = 30;
@@ -220,3 +225,9 @@ uint8_t Cfg_AppDataGetLowPowerMode()
 {
     return app_data.low_power_mode;
 }
+
+uint8_t Cfg_AppDataGetAlgoStartMode()
+{
+    return app_data.algo_start_mode;
+}
+

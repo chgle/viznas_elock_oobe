@@ -129,9 +129,12 @@ typedef enum _vizn_api_status
     kStatus_API_Layer_SetLowPowerMode_SaveFailed,   /*!<Failed to save low power mode config flash failed*/
 
     // Enrolment AddNewFace
-    kStatus_API_Layer_EnrolmentAddNewFace_NoMemory, /*!<Saving a face into the database will fail if no memory avaible
-                                                     */
+    kStatus_API_Layer_EnrolmentAddNewFace_NoMemory, /*!<Saving a face into the database will fail if no memory avaible*/
 
+    // Set Algo Start Mode
+    kStatus_API_Layer_SetAlgoStartMode_NotSupported, /*!<Algo start mode config not supported*/
+    kStatus_API_Layer_SetAlgoStartMode_Same,         /*!<Algo start mode config is same as current setting*/
+    kStatus_API_Layer_SetAlgoStartMode_SaveFailed,   /*!<Failed to save algo start mode config flash failed*/
 } vizn_api_status_t;
 
 /*! @brief The handle of the VIZN_api_handle module */
@@ -216,7 +219,7 @@ vizn_api_status_t VIZN_UnregisterClient(VIZN_api_handle_t apiHandle, VIZN_api_cl
  * @param nameList      Vector of strings in which the API will place the list of registered users
  * @return             Status of VIZN_GetRegisteredUsers
  */
-vizn_api_status_t VIZN_GetRegisteredUsers(VIZN_api_client_t *clientHandle, std::vector<std::string> *nameList, int count);
+vizn_api_status_t VIZN_GetRegisteredUsers(VIZN_api_client_t *clientHandle, std::vector<std::string> &nameList, int count);
 
 /**
  * @brief Set the verbose mode. Enabling this will send more information towards the clients registered
@@ -420,6 +423,24 @@ vizn_api_status_t VIZN_SetLowPowerMode(VIZN_api_client_t *clientHandle, cfg_lowp
 vizn_api_status_t VIZN_GetLowPowerMode(VIZN_api_client_t *clientHandle, cfg_lowpower_t *mode);
 
 /**
+ * @brief Set the algo start mode configuration
+ *
+ * @param clientHandle    The client handler which required this action
+ * @param mode         The value of algo start mode. Two values supported ALGO_START_MODE_AUTO, ALGO_START_MODE_MANUAL
+ * @return                Status of VIZN_SetAlgoStartMode
+ */
+vizn_api_status_t VIZN_SetAlgoStartMode(VIZN_api_client_t *clientHandle, cfg_algo_start_mode_t mode);
+
+/**
+ * @brief Get the current algo start mode configuration.
+ *
+ * @param clientHandle    The client handler which required this action
+ * @param mode            Pointer to _cfg_algo_start_mode variable
+ * @return                Status of VIZN_GetAlgoStartMode
+ */
+vizn_api_status_t VIZN_GetAlgoStartMode(VIZN_api_client_t *clientHandle, cfg_algo_start_mode_t *mode);
+
+/**
  * @brief Erase the wifi credentials from flash.
  *
  * @param clientHandle    The client handler which required this action
@@ -451,5 +472,7 @@ vizn_api_status_t VIZN_WiFiCredentials_Get(VIZN_api_client_t *clientHandle, char
  * @param update_method   The method of update chosen OTW or OTA
  */
 vizn_api_status_t VIZN_FWUpdate_Set(VIZN_api_client_t *clientHandle, cfg_fwupdate_method_t update_method);
+
+vizn_api_status_t VIZN_StartRecognition(VIZN_api_client_t *clientHandle);
 
 #endif /* SLN_API_H_ */

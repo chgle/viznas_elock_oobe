@@ -11,7 +11,6 @@
 
 #ifndef _CAMERA_RTVISION_H_
 #define _CAMERA_RTVISION_H_
-
 #if RTVISION_BOARD
 
 #ifdef __cplusplus
@@ -35,7 +34,11 @@ extern "C" {
 /* Frame buffer data alignment. */
 #define FRAME_BUFFER_ALIGN 64
 
+#if (APP_CAMERA_TYPE == APP_CAMERA_GC0308)
+#define APP_FRAME_BUFFER_COUNT 2
+#else
 #define APP_FRAME_BUFFER_COUNT 4
+#endif
 
 /* Pixel format RGB565, bytesPerPixel is 2. */
 #define APP_BPP 2
@@ -58,8 +61,8 @@ int Camera_QMsgSetPWM(uint8_t led, uint8_t pulse_width);
 void Camera_GetPWM(uint8_t led, uint8_t *pulse_width);
 int Camera_SetMonoMode(uint8_t enable);
 int Camera_SetDispMode(uint8_t displayMode);
-uint8_t Camera_GetRGBExposureMode(void);
-int Camera_SetRGBExposureMode(uint8_t mode);
+int Camera_SetTargetY(uint8_t whichCamera,uint8_t upOrDown);
+int Camera_SetExposureMode(uint8_t whichCamera, uint8_t mode);
 int Camera_ChangeInterfaceMode(uint8_t mode);
 
 #ifdef __cplusplus

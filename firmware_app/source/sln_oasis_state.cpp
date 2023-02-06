@@ -34,6 +34,7 @@ extern volatile uint8_t g_AddNewFace;
 extern volatile uint8_t g_RemoveExistingFace;
 extern volatile uint8_t g_RecFace;
 extern volatile uint8_t g_FaceSystemLocked;
+
 volatile static uint32_t s_API_Events = 0;
 //extern std::string g_AddNewFaceName;
 
@@ -50,7 +51,7 @@ static void SendDelFaceQMsg(uint8_t start)
     Oasis_SendQMsg((void *)&pQMsg);
 }
 
-static void SendAddFaceQMsg(uint8_t start, char* name)
+static void SendAddFaceQMsg(uint8_t start, char* name, uint8_t stop_reason)
 {
     QMsg *pQMsg = (QMsg*)pvPortMalloc(sizeof(QMsg));
     if (NULL == pQMsg)
@@ -60,6 +61,7 @@ static void SendAddFaceQMsg(uint8_t start, char* name)
     }
     pQMsg->id = QMSG_FACEREC_ADDNEWFACE;
     pQMsg->msg.cmd.data.add_face.add_newface = start;
+    pQMsg->msg.cmd.data.add_face.stop_reason = stop_reason;
     if (name)
     {
     	memcpy(pQMsg->msg.cmd.data.add_face.new_face_name,name,strlen(name) + 1);
@@ -127,7 +129,7 @@ void StartRegistrationProcess(char* name)
     s_face_detect                        = false;
     s_firstDetected                      = false;
     g_AddNewFace                         = 1;
-    SendAddFaceQMsg(g_AddNewFace,name);
+    SendAddFaceQMsg(g_AddNewFace,name, 0);
     StartRegistrationTimers();
     StopLockProcess();
 }
@@ -154,7 +156,7 @@ void StopRegistrationProcess(uint8_t event)
     s_API_Events = 1 << event;
 //    g_AddNewFaceName.assign("");
     g_AddNewFace = 0;
-    SendAddFaceQMsg(g_AddNewFace, NULL);
+    SendAddFaceQMsg(g_AddNewFace, NULL, event);
     if (event != kEvents_API_Layer_RegCanceled)
     {
         StartLockProcess(true);
@@ -353,7 +355,10 @@ void Oasis_TimerCallback(uint8_t id_timer)
         break;
         case TIMER_SYSTEM_LOCKED:
         {
-            StartRecognitionProcess();
+            if (Cfg_AppDataGetAlgoStartMode() == ALGO_START_MODE_AUTO)
+            {
+                StartRecognitionProcess();
+            }
         }
         break;
         case TIMER_DET_NO_FACE:

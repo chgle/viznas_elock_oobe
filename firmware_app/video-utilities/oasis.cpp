@@ -21,6 +21,7 @@
 #include "sln_api_internal.h"
 #include "sln_shell.h"
 #include "toojpeg.h"
+#include "face_rec_rt_info.h"
 
 /*******************************************************************************
  * Definitions
@@ -36,7 +37,7 @@
 #define IR_PWM_INTERVAL 10
 
 #define WHITE_PWM_MIN      0
-#define WHITE_PWM_MAX      6
+#define WHITE_PWM_MAX      2
 #define WHITE_PWM_INTERVAL 2
 #else
 #define IR_PWM_MIN      20
@@ -77,8 +78,8 @@ static void clearFaceInfoMsg(QUIInfoMsg *info);
 static void EvtHandler(ImageFrame_t *frames[], OASISLTEvt_t evt, OASISLTCbPara_t *para, void *user_data);
 // static void EvtHandler2(ImageFrame_t* frame,OASISLTEvt_t evt,OASISLTCbPara_t* para,void* user_data);
 static int GetRegisteredFacesHandler(uint16_t *face_ids, void **faces, uint32_t *size, void* user_data);
-static int AddNewFaceHandler(uint16_t *face_id, void *face, void* snapshot, int snapshot_len, void* user_data);
-static int UpdateFaceHandler(uint16_t face_id, void *face, void* snapshot_data, int length, int offset, void* user_data);
+static int AddNewFaceHandler(uint16_t *face_id, void *face, SnapshotItem_t* snapshot, int num, void* user_data);
+static int UpdateFaceHandler(uint16_t face_id, void *face, SnapshotItem_t* snapshot, int num, void* user_data);
 static int Oasis_Printf(const char *formatString);
 static int Oasis_Exit();
 static void Oasis_Task(void *param);
@@ -88,6 +89,15 @@ static int Oasis_SetImgType(OASISLTImageType_t *img_type);
 /*******************************************************************************
  * Variables
  *******************************************************************************/
+#if defined (__cplusplus)
+extern "C" {
+#endif
+extern void __base_BOARD_SDRAM_RT_INFO(void);
+extern void __top_BOARD_SDRAM_RT_INFO(void);
+#if defined (__cplusplus)
+} // extern "C"
+#endif
+
 extern uint8_t g_RemoveExistingFace;
 extern VIZN_api_client_t VIZN_API_CLIENT(Buttons);
 //extern std::string g_AddNewFaceName;
@@ -95,10 +105,9 @@ static QUIInfoMsg gui_info;
 static FaceRecBuffer s_FaceRecBuf = {NULL,NULL};
 static QueueHandle_t gFaceDetMsgQ = NULL;
 static OASISLTInitPara_t s_InitPara;
-static uint8_t s_lockstatus       = 1;
+static uint8_t s_lockstatus       = 0;
 static OasisState s_CurOasisState = OASIS_STATE_FACE_REC_START;
 static uint8_t s_appType;
-
 volatile int g_OASISLT_heap_debug;
 
 /*dtc buffer for inference engine optimization*/
@@ -115,15 +124,37 @@ OCRAM_CACHED_BSS RAM_ADDRESS_ALIGNMENT(4) static uint8_t s_OasisMemPool[760 * 10
 #endif
 
 
+#define FACEREC_FS_RESERVED_AREA_START_ADDRESS  (FACEREC_FS_ITEM_ADDR + sizeof(FeatureItem)*FEATUREDATA_MAX_COUNT)
+
+//please remain this structure sector size aligned
+typedef struct
+{
+	char name[32]; //name of the user
+    uint32_t size;
+    uint8_t data[FLASH_SECTOR_SIZE - sizeof(size) - sizeof(name)];
+
+}ReservedItem_t;
+
+int reservedItemNum = 0;
+//please ensure image saved in flash will not exceed the total flash size and overwrite FICA data on the end of the flash area.
+#define GET_ADDRESS_BY_IDX_RESERVED_AREA(idx) (FACEREC_FS_RESERVED_AREA_START_ADDRESS + idx * sizeof(ReservedItem_t))
+#define RESERVED_ITEM_SECTORS (sizeof(ReservedItem_t)/FLASH_SECTOR_SIZE)
+
+
 //#define OASIS_JPEG_IMG_WIDTH (100)		//50
 //#define OASIS_JPEG_IMG_HEIGHT (100)		//50
-//static uint8_t s_tmpBuffer4Jpeg[OASIS_JPEG_IMG_WIDTH*OASIS_JPEG_IMG_HEIGHT*3];
-//static uint32_t s_dataSizeInJpeg = 0;
-//
-//static void Oasis_WriteJpegBuffer(uint8_t byte)
-//{
-//	s_tmpBuffer4Jpeg[s_dataSizeInJpeg++] = byte;
-//}
+static ReservedItem_t s_tmpBuffer4Jpeg;
+static uint32_t s_dataSizeInJpeg = 0;
+
+static void Oasis_WriteJpegBuffer(uint8_t byte)
+{
+	if (s_dataSizeInJpeg < sizeof(s_tmpBuffer4Jpeg.data))
+	{
+		s_tmpBuffer4Jpeg.data[s_dataSizeInJpeg++] = byte;
+	}
+}
+
+
 
 /*******************************************************************************
  * Code
@@ -140,6 +171,8 @@ static void clearFaceInfoMsg(QUIInfoMsg *info)
     DB_Count(&count);
 
     memset(info->name, 0x0, 64);
+    info->recognize       = false;
+    info->enrolment       = false;
     info->similar         = 1.0f;
     info->dt              = 0;
     info->rt              = 0;
@@ -264,7 +297,7 @@ static void EvtHandler(ImageFrame_t *frames[], OASISLTEvt_t evt, OASISLTCbPara_t
             break;
         case OASISLT_EVT_QUALITY_CHK_COMPLETE:
         {
-            UsbShell_Printf("[OASIS]:quality chk res:%d\r\n", para->qualityResult);
+            UsbShell_DbgPrintf(VERBOSE_MODE_L2,"[OASIS]:quality chk res:%d\r\n", para->qualityResult);
 
             gui_info.irLive  = para->reserved[5];
             gui_info.front   = para->reserved[1];
@@ -366,6 +399,7 @@ static void EvtHandler(ImageFrame_t *frames[], OASISLTEvt_t evt, OASISLTCbPara_t
                 UsbShell_DbgPrintf(VERBOSE_MODE_L2, "[OASIS]:face id:%d\r\n", id);
                 DB_GetName(id, name);
                 memcpy(gui_info.name, name.c_str(), name.size());
+                gui_info.recognize  = true;
                 face_info.recognize = true;
                 face_info.name      = std::string(name);
                 UsbShell_DbgPrintf(VERBOSE_MODE_L2, "[OASIS]:face id:%d name:%s\r\n", id, gui_info.name);
@@ -375,6 +409,7 @@ static void EvtHandler(ImageFrame_t *frames[], OASISLTEvt_t evt, OASISLTCbPara_t
                 // face is not recognized, do nothing
                 UsbShell_DbgPrintf(VERBOSE_MODE_L2, "[OASIS]:face unrecognized\r\n");
                 face_info.recognize = false;
+                gui_info.recognize  = false;
             }
 
 
@@ -439,11 +474,14 @@ static void EvtHandler(ImageFrame_t *frames[], OASISLTEvt_t evt, OASISLTCbPara_t
 
         case OASISLT_EVT_REG_START:
         {
+        	 UsbShell_DbgPrintf(VERBOSE_MODE_L2, "Reg start\r\n");
         }
         break;
 
         case OASISLT_EVT_REG_IN_PROGRESS:
         	gui_info.OriExpected = para->faceOrientation;
+       	    UsbShell_DbgPrintf(VERBOSE_MODE_L2, "Reg in progress\r\n");
+
             break;
         case OASISLT_EVT_REG_COMPLETE:
         {
@@ -461,6 +499,7 @@ static void EvtHandler(ImageFrame_t *frames[], OASISLTEvt_t evt, OASISLTCbPara_t
                 DB_Count(&count);
                 // gFaceInfoMsg.msg.info.registeredFaces = featurenames.size();
                 gui_info.registeredFaces = count;
+                gui_info.enrolment  = true;
                 // gui_info.updateFlag |= DISPLAY_INFO_UPDATE_NAME_SIM_RT|DISPLAY_INFO_UPDATE_NEW_REG_FACE;
                 face_info.dt        = gui_info.dt;
                 face_info.rt        = gui_info.rt;
@@ -470,6 +509,7 @@ static void EvtHandler(ImageFrame_t *frames[], OASISLTEvt_t evt, OASISLTCbPara_t
             else
             {
                 face_info.enrolment = false;
+                gui_info.enrolment  = false;
             }
             VIZN_EnrolmentEvent(gApiHandle, face_info);
         }
@@ -508,7 +548,9 @@ static int GetRegisteredFacesHandler(uint16_t *face_ids, void **faces, uint32_t 
     return 0;
 }
 
-static int AddNewFaceHandler(uint16_t *face_id, void *face,void* snapshot, int snapshot_len, void* user_data)
+
+
+static int AddNewFaceHandler(uint16_t *face_id, void *face,SnapshotItem_t* snapshot, int snapshotNum, void* user_data)
 {
     vizn_api_status_t status;
     int ret = 0;
@@ -523,11 +565,89 @@ static int AddNewFaceHandler(uint16_t *face_id, void *face,void* snapshot, int s
             UsbShell_Printf("Maximum number of users reached\r\n");
         }
         ret = -1;
+    }else
+    {
+
+
+#if 0
+    	//Sample code on how to encode and save a jpeg image to flash
+    	for(uint8_t ii = 0;ii<snapshotNum;ii++)
+    	{
+
+			s_dataSizeInJpeg = 0;
+			memset(&s_tmpBuffer4Jpeg,0,sizeof(s_tmpBuffer4Jpeg));
+			auto ok = TooJpeg::writeJpeg(Oasis_WriteJpegBuffer,
+					snapshot[ii].data,
+					snapshot[ii].w,
+					snapshot[ii].h,
+					1,90,1);
+
+			sprintf(s_tmpBuffer4Jpeg.name,"%d_%d.jpg",*face_id,ii);
+
+			UsbShell_Printf("[OASIS]:TooJpeg %s ret:%d file size:%d\r\n",
+					s_tmpBuffer4Jpeg.name,
+					ok,s_dataSizeInJpeg);
+			if (s_dataSizeInJpeg == sizeof(s_tmpBuffer4Jpeg.data))
+			{
+				UsbShell_Printf("[OASIS]:TooJpeg warning: jpeg buffer may overflow!!!\r\n");
+				int new_w = snapshot[ii].w*0.9f;
+				int new_h = snapshot[ii].h*0.9f;
+				int element_size = (snapshot[ii].fmt == OASIS_IMG_FORMAT_GREY8)?1:3;
+
+				uint8_t* resized = (uint8_t*)pvPortMalloc(new_w*new_h*element_size);
+				int tmp_buf_size = OASISLT_util_resize((const uint8_t*)snapshot[ii].data,
+						snapshot[ii].w,snapshot[ii].h,
+										resized,
+										new_w,
+										new_h,
+										OASIS_IMG_FORMAT_BGR888,
+										NULL);
+				uint8_t* tmp_resized = (uint8_t*)pvPortMalloc(tmp_buf_size);
+				OASISLT_util_resize((const uint8_t*)snapshot[ii].data,
+						snapshot[ii].w,snapshot[ii].h,
+						resized,
+						new_w,new_h,
+						snapshot[ii].fmt,
+						tmp_resized);
+				s_dataSizeInJpeg = 0;
+				ok = TooJpeg::writeJpeg(Oasis_WriteJpegBuffer,
+						resized,
+						new_w,
+						new_h,
+						1,90,1);
+
+				s_tmpBuffer4Jpeg.size = s_dataSizeInJpeg;
+
+				UsbShell_Printf("[OASIS]:TooJpeg %s ret:%d file size:%d\r\n",
+						s_tmpBuffer4Jpeg.name,
+						ok,s_dataSizeInJpeg);
+
+				vPortFree(tmp_resized);
+
+			}else
+			{
+				s_tmpBuffer4Jpeg.size = s_dataSizeInJpeg;
+			}
+
+			UsbShell_Printf("[OASIS]:TooJpeg write to:0x%x \r\n",GET_ADDRESS_BY_IDX_RESERVED_AREA(reservedItemNum));
+
+//			if (s_dataSizeInJpeg > sizeof(s_tmpBuffer4Jpeg.data))
+            for(uint32_t jj = 0;jj< RESERVED_ITEM_SECTORS;jj++)
+            {
+			    SLN_Write_Sector(GET_ADDRESS_BY_IDX_RESERVED_AREA(reservedItemNum) + jj*FLASH_SECTOR_SIZE,
+			    		(uint8_t*)&s_tmpBuffer4Jpeg + jj*FLASH_SECTOR_SIZE,
+						FLASH_SECTOR_SIZE);
+
+
+            }
+            reservedItemNum++;
+    	}
+#endif
     }
     return ret;
 }
 
-static int UpdateFaceHandler(uint16_t face_id, void *face,void* snapshot_data, int length, int offset, void* user_data)
+static int UpdateFaceHandler(uint16_t face_id, void *face,SnapshotItem_t* snapshot_data, int num, void* user_data)
 {
     int ret;
     float *feature_data = (float *)face;
@@ -600,7 +720,7 @@ static void Oasis_PWMControl(uint8_t led, uint8_t curPWM, uint8_t direction)
 
 //For GC0308, we can combine maunal exposure and pwm to adjust rgb face brightness.
 //For MT9M114, only use pwm to adjust rgb face brightness.
-static void Oasis_LedControl(cfg_led_t ledID,uint8_t direction, uint8_t enableRGBModeCtrl)
+static void Oasis_LedControl(cfg_led_t ledID,uint8_t direction)
 {
 
     uint8_t pwm;
@@ -608,22 +728,6 @@ static void Oasis_LedControl(cfg_led_t ledID,uint8_t direction, uint8_t enableRG
     UsbShell_DbgPrintf(VERBOSE_MODE_L2,"Oasis_LedControl,led:%d dir:%d pwm:%d\r\n",ledID, direction, pwm);
     Oasis_PWMControl(ledID, pwm, direction);
 
-    if (LED_WHITE == ledID && enableRGBModeCtrl)
-    {
-        uint8_t mode = Camera_GetRGBExposureMode();
-        UsbShell_Printf("[OASIS]:Oasis_LedControl mode %d",mode);
-		if (direction)
-		{
-			//Camera_QMsgSetPWM(LED_WHITE, pwm);
-			mode = (mode < CAMERA_EXPOSURE_MODE_AUTO_LEVEL3)? (mode + 1):CAMERA_EXPOSURE_MODE_AUTO_LEVEL3;
-		}else
-		{
-			//Camera_QMsgSetPWM(LED_WHITE,0);
-			mode = (mode > CAMERA_EXPOSURE_MODE_AUTO_LEVEL0)? (mode-1):CAMERA_EXPOSURE_MODE_AUTO_LEVEL0;
-		}
-        UsbShell_Printf("----> %d\r\n",mode);
-		Camera_SetRGBExposureMode(mode);
-    }
 }
 
 /* Used to dynamically adjust face brightness, user can adjust brightness by modifing LED's light intensity or using manual exposure.
@@ -632,16 +736,20 @@ static void Oasis_LedControl(cfg_led_t ledID,uint8_t direction, uint8_t enableRG
  */
 static void AdjustBrightnessHandler(uint8_t frame_idx, uint8_t direction, void* user_data)
 {
-
+	UsbShell_DbgPrintf(VERBOSE_MODE_L2, "Adjust brightness, idx:%d dir:%d\r\n",frame_idx,direction);
     if (frame_idx == OASISLT_INT_FRAME_IDX_IR)
     {
-        Oasis_LedControl(LED_IR,direction,0);
+        //Oasis_LedControl(LED_IR,direction);
+        Camera_SetTargetY(IR_CAMERA,direction);
     }
     else
     {
         //There is a HW limitation to control LED_WHITE and LED_IR at the same time, so diable RGB part.
 #if RT106F_ELOCK_BOARD
-    	Oasis_LedControl(LED_WHITE,direction,1);
+    	Oasis_LedControl(LED_WHITE,direction);
+    	Camera_SetTargetY(COLOR_CAMERA,direction);
+#elif RTVISION_BOARD
+    	Camera_SetTargetY(COLOR_CAMERA,direction);
 #endif
     }
 }
@@ -673,11 +781,17 @@ static void Oasis_Task(void *param)
     // ask for the first frame
     clearFaceInfoMsg(&gui_info);
     Oasis_SendFaceInfoMsg(gui_info);
-    Oasis_SendFaceDetReqMsg(s_FaceRecBuf.dataIR, s_FaceRecBuf.dataRGB);
-
     memset(&gTimeStat, 0, sizeof(gTimeStat));
 
-    VIZN_StartRecognition(NULL);
+    if (Cfg_AppDataGetAlgoStartMode() == ALGO_START_MODE_AUTO)
+    {
+        s_lockstatus = 1;
+        uint8_t pwm  = 0;
+        VIZN_GetPulseWidth(NULL, LED_IR, &pwm);
+        Camera_QMsgSetPWM(LED_IR, pwm);
+        Oasis_SendFaceDetReqMsg(s_FaceRecBuf.dataIR, s_FaceRecBuf.dataRGB);
+        VIZN_StartRecognition(NULL);
+    }
     while (1)
     {
         // pick up one response message.
@@ -749,52 +863,67 @@ static void Oasis_Task(void *param)
 
                 case QMSG_FACEREC_ADDNEWFACE:
                 {
-                	if (rxQMsg->msg.cmd.data.add_face.add_newface)
-                	{
-                		run_flag = OASIS_DET_REC_REG;
-                		Oasis_SetState(OASIS_STATE_FACE_REG_START);
 
-                		memcpy(gTimeStat.new_name,
-                				rxQMsg->msg.cmd.data.add_face.new_face_name,
-								sizeof(rxQMsg->msg.cmd.data.add_face.new_face_name));
-                	}else
-                	{
-                		run_flag = OASIS_DET_REC;
-                		Oasis_SetState(OASIS_STATE_FACE_REG_STOP);
-                	}
-//                    run_flag &= ~(OASIS_REG_MODE);
-//                    reg_mode = (rxQMsg->msg.cmd.data.add_newface) ? OASIS_REG_MODE : 0;
-//                    run_flag |= reg_mode;
-//                    if (reg_mode == OASIS_REG_MODE)
-//                    {
-//                        Oasis_SetState(OASIS_STATE_FACE_REG_START);
-//                    }
-//                    else
-//                    {
-//                        Oasis_SetState(OASIS_STATE_FACE_REG_STOP);
-//                    }
+                    if (rxQMsg->msg.cmd.data.add_face.add_newface)
+                    {
+                        run_flag = OASIS_DET_REC_REG;
+                        Oasis_SetState(OASIS_STATE_FACE_REG_START);
+						uint8_t pwm  = 0;
+						VIZN_GetPulseWidth(NULL, LED_IR, &pwm);
+						Camera_QMsgSetPWM(LED_IR, pwm);
+						Camera_SetExposureMode(IR_CAMERA,0);
+						Camera_SetExposureMode(COLOR_CAMERA,0);
+
+                        memcpy(gTimeStat.new_name,
+                                rxQMsg->msg.cmd.data.add_face.new_face_name,
+                                sizeof(rxQMsg->msg.cmd.data.add_face.new_face_name));
+                    }else
+                    {
+                        run_flag = OASIS_DET_REC;
+                        Oasis_SetState(OASIS_STATE_FACE_REG_STOP);
+                        Camera_QMsgSetPWM(LED_IR, 0);
+                        Camera_QMsgSetPWM(LED_WHITE, 0);
+						Camera_SetExposureMode(IR_CAMERA,0);
+						Camera_SetExposureMode(COLOR_CAMERA,0);
+
+                        UsbShell_Printf("[oasis] stop_reg: %x\r\n", rxQMsg->msg.cmd.data.add_face.stop_reason);
+
+                        // when stopping registration process in manual, better to call OASISLT_run_extend again to clean state in lib.
+                        if ((rxQMsg->msg.cmd.data.add_face.stop_reason == kEvents_API_Layer_RegFailed) && !gui_info.enrolment)
+                        {
+                            OASISLT_run_extend(frames, run_flag, init_p->minFace, &gTimeStat);
+                        }
+                    }
                 }
                 break;
 
                 case QMSG_FACEREC_STOP:
                 {
+                    UsbShell_DbgPrintf(VERBOSE_MODE_L2, "[OASIS]:QMSG_FACEREC_STOP!!!\r\n");
                     s_lockstatus = 0;
-                    //Camera_QMsgSetPWM(LED_IR, 0);
+                    Camera_QMsgSetPWM(LED_IR, 0);
                     Camera_QMsgSetPWM(LED_WHITE, 0);
-                    Camera_SetRGBExposureMode(CAMERA_EXPOSURE_MODE_AUTO_LEVEL0);
+					Camera_SetExposureMode(IR_CAMERA,0);
+					Camera_SetExposureMode(COLOR_CAMERA,0);
                 }
                 break;
 
                 case QMSG_FACEREC_START:
                 {
-                    uint8_t pwm  = 0;
-                    s_lockstatus = 1;
                     UsbShell_DbgPrintf(VERBOSE_MODE_L2, "[OASIS]:QMSG_FACEREC_START!\r\n");
-                    VIZN_GetPulseWidth(NULL, LED_IR, &pwm);
-                    Camera_QMsgSetPWM(LED_IR, pwm);
+                    if (s_lockstatus == 0)
+                    {
 
-                    clearFaceInfoMsg(&gui_info);
-                    Oasis_SendFaceInfoMsg(gui_info);
+						uint8_t pwm  = 0;
+						VIZN_GetPulseWidth(NULL, LED_IR, &pwm);
+						Camera_QMsgSetPWM(LED_IR, pwm);
+						Camera_SetExposureMode(IR_CAMERA,0);
+						Camera_SetExposureMode(COLOR_CAMERA,0);
+                        s_lockstatus = 1;
+                        clearFaceInfoMsg(&gui_info);
+                        Oasis_SendFaceInfoMsg(gui_info);
+                    }
+
                     Oasis_SendFaceDetReqMsg(s_FaceRecBuf.dataIR, s_FaceRecBuf.dataRGB);                    
                 }
                 break;
@@ -813,9 +942,17 @@ static int Oasis_SetImgType(OASISLTImageType_t *img_type)
     {
         *img_type = OASIS_IMG_TYPE_RGB_SINGLE;
     }
+    else if (s_appType == APP_TYPE_ELOCK_LIGHT_SINGLE || s_appType == APP_TYPE_ELOCK_HEAVY_SINGLE)
+    {
+        *img_type = OASIS_IMG_TYPE_IR_SINGLE;
+    }
     else if (s_appType == APP_TYPE_ELOCK_LIGHT || s_appType == APP_TYPE_ELOCK_HEAVY)
     {
         *img_type = OASIS_IMG_TYPE_IR_RGB_DUAL;
+    }
+    else if (s_appType == APP_TYPE_DOOR_ACCESS_LIGHT_SINGLE|| s_appType == APP_TYPE_DOOR_ACCESS_HEAVY_SINGLE)
+    {
+        *img_type = OASIS_IMG_TYPE_RGB_SINGLE;
     }
     else if (s_appType == APP_TYPE_DOOR_ACCESS_LIGHT || s_appType == APP_TYPE_DOOR_ACCESS_HEAVY)
     {
@@ -834,11 +971,13 @@ static int Oasis_SetModelClass(OASISLTModelClass_t *model_class)
     {
         *model_class = OASISLT_MODEL_CLASS_LIGHT;
     }
-    if (s_appType == APP_TYPE_ELOCK_LIGHT || s_appType == APP_TYPE_DOOR_ACCESS_LIGHT)
+    if (s_appType == APP_TYPE_ELOCK_LIGHT || s_appType == APP_TYPE_DOOR_ACCESS_LIGHT 
+        || s_appType == APP_TYPE_ELOCK_LIGHT_SINGLE || s_appType == APP_TYPE_DOOR_ACCESS_LIGHT_SINGLE)
     {
         *model_class = OASISLT_MODEL_CLASS_LIGHT;
     }
-    else if (s_appType == APP_TYPE_ELOCK_HEAVY || s_appType == APP_TYPE_DOOR_ACCESS_HEAVY)
+    else if (s_appType == APP_TYPE_ELOCK_HEAVY || s_appType == APP_TYPE_DOOR_ACCESS_HEAVY
+        || s_appType == APP_TYPE_ELOCK_HEAVY_SINGLE || s_appType == APP_TYPE_DOOR_ACCESS_HEAVY_SINGLE)
     {
         *model_class = OASISLT_MODEL_CLASS_HEAVY;
     }
@@ -850,32 +989,42 @@ static int Oasis_SetModelClass(OASISLTModelClass_t *model_class)
     return 0;
 }
 
+static void _FaceRecRtInfo_Log(const char *formatString)
+{
+	UsbShell_DbgPrintf(VERBOSE_MODE_L2, formatString);
+}
+
 int Oasis_Start()
 {
     //uint8_t mode = Cfg_AppDataGetEmotionRecTypes();
+    /* Runtime info REGION START ADDRESS, need to align with the definition in the MCUXpresso MCU Setting */
+    unsigned int rtInfoAddress = (unsigned int)__base_BOARD_SDRAM_RT_INFO;
+    unsigned int rtInfoSize = (unsigned int)__top_BOARD_SDRAM_RT_INFO - (unsigned int)__base_BOARD_SDRAM_RT_INFO;
+    FaceRecRtInfo_Init((unsigned char *)rtInfoAddress, rtInfoSize, _FaceRecRtInfo_Log);
+
     s_appType    = Cfg_AppDataGetApplicationType();
     int ret      = 0;
 
-    if (s_appType != APP_TYPE_USERID)
+    if ((s_appType != APP_TYPE_USERID) && (s_appType != APP_TYPE_DOOR_ACCESS_LIGHT_SINGLE) && (s_appType != APP_TYPE_DOOR_ACCESS_HEAVY_SINGLE))
     {
         s_FaceRecBuf.dataIR = (uint8_t *)pvPortMalloc(REC_RECT_WIDTH * REC_RECT_HEIGHT * 3);
         if (s_FaceRecBuf.dataIR == NULL)
         {
-        	ret = -1;
-        	goto error_cases;
+            ret = -1;
+            goto error_cases;
         }
     }
 
-    s_FaceRecBuf.dataRGB = (uint8_t *)pvPortMalloc(REC_RECT_WIDTH * REC_RECT_HEIGHT * 3);
-    if (s_FaceRecBuf.dataRGB == NULL)
+    if ((s_appType != APP_TYPE_ELOCK_LIGHT_SINGLE) && (s_appType != APP_TYPE_ELOCK_HEAVY_SINGLE))
     {
-        ret = -2;
-        goto error_cases;
+        s_FaceRecBuf.dataRGB = (uint8_t *)pvPortMalloc(REC_RECT_WIDTH * REC_RECT_HEIGHT * 3);
+        if (s_FaceRecBuf.dataRGB == NULL)
+        {
+            ret = -2;
+            goto error_cases;
+        }
     }
-
     memset(&s_InitPara, 0, sizeof(s_InitPara));
-
-    //s_InitPara.img_format = OASIS_IMG_FORMAT_BGR888;
 
     Oasis_SetImgType(&s_InitPara.imgType);
     Oasis_SetModelClass(&s_InitPara.modClass);
@@ -895,7 +1044,7 @@ int Oasis_Start()
     s_InitPara.enableFlags = 0;
     if (s_appType != APP_TYPE_USERID)
     {
-        s_InitPara.enableFlags |= 0;//OASIS_ENABLE_MASK_FACE_REC;//OASIS_ENABLE_MULTI_VIEW;
+        s_InitPara.enableFlags |= OASIS_ENABLE_FACE_FEA_SMART_LEARNING;//OASIS_ENABLE_FACE_REC_BRIGHTNESS_CHECK;
     }
     s_InitPara.falseAcceptRate = OASIS_FAR_1_1000000;
     s_InitPara.enableFlags |= (Cfg_AppDataGetLivenessMode() == LIVENESS_MODE_ON) ? OASIS_ENABLE_LIVENESS : 0;
@@ -905,6 +1054,9 @@ int Oasis_Start()
     s_InitPara.width  = REC_RECT_WIDTH;
     s_InitPara.fastMemSize = DTC_OPTIMIZE_BUFFER_SIZE;
     s_InitPara.fastMemBuf  = s_DTCOPBuf;
+    //s_InitPara.runtimePara.recogTH = 0.75f;
+
+
     ret = OASISLT_init(&s_InitPara);
 
     if (ret == OASIS_INIT_INVALID_MEMORYPOOL)

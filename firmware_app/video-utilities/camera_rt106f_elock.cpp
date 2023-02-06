@@ -47,6 +47,7 @@
 #include "sln_api.h"
 #include "fsl_common.h"
 #include "fsl_qtmr.h"
+#include "sln_shell.h"
 
 /*******************************************************************************
  * Definitions
@@ -130,18 +131,18 @@ static unsigned int DQIndex = 0;
 static uint16_t *s_pBufferQueue = NULL;
 uint16_t *g_pRotateBuff         = NULL;
 
-//static uint8_t s_PwmIR;
-//static uint8_t s_PwmWhite;
-
 static uint8_t sCurrentLedPwmValue[LED_NUM];
 
 #if (APP_CAMERA_TYPE == APP_CAMERA_GC0308)
 static int8_t s_CurrentCameraID = COLOR_CAMERA;
-static bool  isOddFrame = false;
 #endif
-static uint8_t s_CurRGBExposureMode = CAMERA_EXPOSURE_MODE_AUTO_LEVEL0;
+static uint8_t s_CurExposureMode[2];
+static uint8_t gPendingExposureModeSet[2];
 
-static uint8_t gPendingRGBExposureModeSet = 0;
+static uint8_t gPendingTargetYSet[2] = {0,0};
+// > 0: increase targetY; < 0 : decrease targetY; 0xFF: set to default Y
+static uint8_t gPendingTargetYValue[2];
+
 
 static csi_resource_t csiResource = {
     .csiBase = CSI,
@@ -246,6 +247,11 @@ int Camera_QMsgSetPWM(uint8_t led, uint8_t pulse_width)
 {
     int status                     = -1;
     QMsg *pQMsg                    = (QMsg*)pvPortMalloc(sizeof(QMsg));
+    if (NULL == pQMsg)
+    {
+        LOGE("[ERROR]: Camera_QMsgSetPWM pQMsg pvPortMalloc failed\r\n");
+        return -1;
+    }
     pQMsg->id                      = QMSG_CMD;
     pQMsg->msg.cmd.id              = QCMD_SET_PWM;
     pQMsg->msg.cmd.data.led_pwm[0] = led;
@@ -473,30 +479,32 @@ static void Camera_RgbIrSwitch(int8_t cameraID)
         return;
     last_id = cameraID;
 
-    if (cameraID == COLOR_CAMERA)
+    if (cameraID == COLOR_CAMERA || cameraID == IR_CAMERA)
     {
-        CAMERA_DEVICE_Stop(&cameraDevice[1]);
-        GPIO_PinWrite(BOARD_CAMERA_SWITCH_GPIO, BOARD_CAMERA_SWITCH_GPIO_PIN, 1);
-        CAMERA_DEVICE_Start(&cameraDevice[0]);
+        CAMERA_DEVICE_Stop(&cameraDevice[cameraID^1]);
+        GPIO_PinWrite(BOARD_CAMERA_SWITCH_GPIO, BOARD_CAMERA_SWITCH_GPIO_PIN, cameraID^1);
+        CAMERA_DEVICE_Start(&cameraDevice[cameraID]);
+
 #if (APP_CAMERA_TYPE == APP_CAMERA_GC0308)
         //only need do this if one IIC used for dual camera
-        if (gPendingRGBExposureModeSet)
+        if (gPendingExposureModeSet[cameraID])
         {
-            CAMERA_DEVICE_Control(&cameraDevice[0],  kCAMERA_DeviceExposureMode, s_CurRGBExposureMode);
-            gPendingRGBExposureModeSet = 0;
+            CAMERA_DEVICE_Control(&cameraDevice[cameraID],  kCAMERA_DeviceExposureMode, s_CurExposureMode[cameraID]);
+            gPendingExposureModeSet[cameraID] = 0;
+        }
+
+        if (gPendingTargetYSet[cameraID])
+        {
+            CAMERA_DEVICE_Control(&cameraDevice[cameraID], kCAMERA_DeviceBrightnessAdjust, gPendingTargetYValue[cameraID]);
+            gPendingTargetYSet[cameraID] = 0;
         }
 #endif
-    }
-    else if (cameraID == IR_CAMERA)
-    {
-        CAMERA_DEVICE_Stop(&cameraDevice[0]);
-        GPIO_PinWrite(BOARD_CAMERA_SWITCH_GPIO, BOARD_CAMERA_SWITCH_GPIO_PIN, 0);
-        CAMERA_DEVICE_Start(&cameraDevice[1]);
-    }
-    else
+
+    }else
     {
         CAMERA_DEVICE_Stop(&cameraDevice[0]);
         CAMERA_DEVICE_Stop(&cameraDevice[1]);
+
     }
 }
 
@@ -504,6 +512,11 @@ int Camera_SetMonoMode(uint8_t enable)
 {
     int status;
     QMsg *pQMsg                       = (QMsg*)pvPortMalloc(sizeof(QMsg));
+    if (NULL == pQMsg)
+    {
+        LOGE("[ERROR]: Camera_SetMonoMode pQMsg pvPortMalloc failed\r\n");
+        return -1;
+    }
     pQMsg->id                         = QMSG_CMD;
     pQMsg->msg.cmd.id                 = QCMD_SET_LIVENESS_MODE;
     pQMsg->msg.cmd.data.liveness_mode = enable;
@@ -515,6 +528,11 @@ int Camera_SetDispMode(uint8_t displayMode)
 {
     int status;
     QMsg *pQMsg                      = (QMsg*)pvPortMalloc(sizeof(QMsg));
+    if (NULL == pQMsg)
+    {
+        LOGE("[ERROR]: Camera_SetDispMode pQMsg pvPortMalloc failed\r\n");
+        return -1;
+    }
     pQMsg->id                        = QMSG_CMD;
     pQMsg->msg.cmd.id                = QCMD_CHANGE_RGB_IR_DISP_MODE;
     pQMsg->msg.cmd.data.display_mode = displayMode;
@@ -523,27 +541,45 @@ int Camera_SetDispMode(uint8_t displayMode)
 }
 
 
-uint8_t Camera_GetRGBExposureMode(void)
-{
-    return s_CurRGBExposureMode;
-}
+//uint8_t Camera_GetRGBExposureMode(void)
+//{
+//    return s_CurRGBExposureMode;
+//}
 
-int Camera_SetRGBExposureMode(uint8_t mode)
+int Camera_SetExposureMode(uint8_t whichCamera, uint8_t mode)
 {
 #if (APP_CAMERA_TYPE == APP_CAMERA_GC0308)
-	if (s_CurRGBExposureMode == mode)
-	{
-		return 0;
-	}else
-	{
-		s_CurRGBExposureMode = mode;
-#if (CAMERA_DIFF_I2C_BUS)
-		CAMERA_DEVICE_Control(&cameraDevice[0],  kCAMERA_DeviceExposureMode, mode);
-#else
-		//delay to do so in Camera_RgbIrSwitch
-		gPendingRGBExposureModeSet = 1;
+
+		if (CAMERA_DIFF_I2C_BUS || (s_appType >= APP_TYPE_ELOCK_LIGHT_SINGLE && s_appType <= APP_TYPE_USERID))
+		{
+			CAMERA_DEVICE_Control(&cameraDevice[whichCamera],  kCAMERA_DeviceExposureMode, mode);
+
+		}else
+		{	//delay to do so in Camera_RgbIrSwitch
+			s_CurExposureMode[whichCamera] = mode;
+			gPendingExposureModeSet[whichCamera] = 1;
+		}
 #endif
-	}
+	return 0;
+}
+
+//whichCamera, 0 indicate RGB, 1 indicate IR.
+//upOrDown, 0 indicate down, 1 indicate up, 0xFF indicate to default value
+int Camera_SetTargetY(uint8_t whichCamera,uint8_t upOrDown)
+{
+#if (APP_CAMERA_TYPE == APP_CAMERA_GC0308)
+    if (CAMERA_DIFF_I2C_BUS || (s_appType >= APP_TYPE_ELOCK_LIGHT_SINGLE && s_appType <= APP_TYPE_USERID))
+    {
+    	CAMERA_DEVICE_Control(&cameraDevice[whichCamera],  kCAMERA_DeviceBrightnessAdjust, upOrDown);
+
+    }else
+    {
+		//delay to do so in Camera_RgbIrSwitch
+		gPendingTargetYSet[whichCamera] = 1;
+		gPendingTargetYValue[whichCamera] = upOrDown;
+    }
+
+    UsbShell_DbgPrintf(VERBOSE_MODE_L2, "Camera_SetTargetY,id:%d upOrDown:%d \r\n",whichCamera,upOrDown);
 #endif
 	return 0;
 }
@@ -563,6 +599,11 @@ int Camera_ChangeInterfaceMode(uint8_t mode)
 {
     int status = -1;
     QMsg* pQMsg                        = (QMsg *)pvPortMalloc(sizeof(QMsg));
+    if (NULL == pQMsg)
+    {
+        LOGE("[ERROR]: Camera_ChangeInterfaceMode pQMsg pvPortMalloc failed\r\n");
+        return -1;
+    }
     pQMsg->id                          = QMSG_CMD;
     pQMsg->msg.cmd.id                  = QCMD_CHANGE_INFO_DISP_MODE;
     pQMsg->msg.cmd.data.interface_mode = mode;
@@ -762,7 +803,7 @@ static void Camera_Init_Task(void *param)
 #else
     cameraConfig.framePerSec = 15;
 #endif
-    NVIC_SetPriority(CSI_IRQn, configMAX_SYSCALL_INTERRUPT_PRIORITY - 1);
+    NVIC_SetPriority(CSI_IRQn, LIB_CSI_PRI);
     CAMERA_RECEIVER_Init(&cameraReceiver, &cameraConfig, Camera_Callback, NULL);
 #if (APP_CAMERA_TYPE == APP_CAMERA_GC0308)
     CAMERA_RECEIVER_SwapBytes(&cameraReceiver);
@@ -790,8 +831,6 @@ static void Camera_Init_Task(void *param)
     CAMERA_DEVICE_Start(&cameraDevice[0]);
     xEventGroupWaitBits(g_SyncVideoEvents, 1 << SYNC_VIDEO_CAMERADEVICE_INIT_BIT, pdTRUE, pdTRUE, portMAX_DELAY);
 #else
-    // RGB camera off
-    CAMERA_DEVICE_Stop(&cameraDevice[0]);
     // IR camera
     CAMERA_DEVICE_Init(&cameraDevice[1], &cameraConfig);
     CAMERA_DEVICE_Control(&cameraDevice[1], kCAMERA_DeviceMonoMode, CAMERA_MONO_MODE_ENABLED);
@@ -920,7 +959,6 @@ static void Camera_Task(void *param)
     BaseType_t ret;
     QMsg *pQMsg;
     QUIInfoMsg infoMsgIn, infoMsgOut;
-
     uint8_t *pDetIR     = NULL;
     uint8_t *pDetRGB    = NULL;
     /*first bit indicate RGB frame is ready or not, 2nd bit indicate IR frame is ready or not*/
@@ -929,13 +967,6 @@ static void Camera_Task(void *param)
     uint8_t dispMode    = Cfg_AppDataGetDisplayMode();
     memset(&infoMsgIn, 0x0, sizeof(infoMsgIn));
     memset(&infoMsgOut, 0x0, sizeof(infoMsgOut));
-
-    uint8_t tmp_pwm_value;
-    VIZN_GetPulseWidth(NULL, LED_IR, &tmp_pwm_value);
-    Camera_SetPWM(LED_IR,tmp_pwm_value);
-
-    VIZN_GetPulseWidth(NULL, LED_WHITE, &tmp_pwm_value);
-    Camera_SetPWM(LED_WHITE,tmp_pwm_value);
 
     xEventGroupWaitBits(g_SyncVideoEvents, 1 << SYNC_VIDEO_CAMERA_INIT_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
     while (1)
@@ -982,29 +1013,20 @@ static void Camera_Task(void *param)
                     if (kStatus_Success == CAMERA_RECEIVER_GetFullBuffer(&cameraReceiver, &s_ActiveFrameAddr))
                     {
 #if (APP_CAMERA_TYPE == APP_CAMERA_GC0308)
-                        isOddFrame = false;
-                        if ((DQIndex & 0x03) == 0) // 0 4 8
-                        {
-                            s_CurrentCameraID = IR_CAMERA;
-                            Camera_RgbIrSwitch(COLOR_CAMERA);
-                        }
-                        else if ((DQIndex & 0x01) == 0) // 2 6 10
-                        {
-                            s_CurrentCameraID = COLOR_CAMERA;
-                            Camera_RgbIrSwitch(IR_CAMERA);
-                        }
-                        else // drop odd frames
-                        {
-                            isOddFrame = true;
-                        }
-#endif
-
-#if (APP_CAMERA_TYPE == APP_CAMERA_GC0308)
-                        if ((false == isOddFrame) && (COLOR_CAMERA == s_CurrentCameraID))
+                        if (COLOR_CAMERA == s_CurrentCameraID)
 #else
                         if (EQIndex % (RGB_IR_FRAME_RATIO + 1) < RGB_IR_FRAME_RATIO)
 #endif
                         { // RBG frame
+                            //UsbShell_DbgPrintf(VERBOSE_MODE_L2, "[camera]:RBG frame!\r\n");
+#if (APP_CAMERA_TYPE == APP_CAMERA_GC0308)
+                            // need to switch to IR camera
+                            if (pDetIR || (dispMode == DISPLAY_MODE_IR))
+                            {
+                                Camera_RgbIrSwitch(IR_CAMERA);
+                                s_CurrentCameraID = IR_CAMERA;
+                            }
+#endif
                             if ((dispMode == DISPLAY_MODE_RGB) && pDispData)
                             {
                                 memcpy(&infoMsgOut, &infoMsgIn, sizeof(QUIInfoMsg));
@@ -1024,11 +1046,20 @@ static void Camera_Task(void *param)
                             }
                         }
 #if (APP_CAMERA_TYPE == APP_CAMERA_GC0308)
-                        else if ((false == isOddFrame) && (IR_CAMERA == s_CurrentCameraID))
+                        else if (IR_CAMERA == s_CurrentCameraID)
 #else
                         else if (EQIndex % (RGB_IR_FRAME_RATIO + 1) == RGB_IR_FRAME_RATIO)
 #endif
                         { // IR frame
+                            //UsbShell_DbgPrintf(VERBOSE_MODE_L2, "[camera]:IR frame!\r\n");
+#if (APP_CAMERA_TYPE == APP_CAMERA_GC0308)
+                            // need to switch to RGB camera
+                            if (pDetRGB || (dispMode == DISPLAY_MODE_RGB))
+                            {
+                                Camera_RgbIrSwitch(COLOR_CAMERA);
+                                s_CurrentCameraID = COLOR_CAMERA;
+                            }
+#endif
                             if ((dispMode == DISPLAY_MODE_IR) && pDispData)
                             {
                                 memcpy(&infoMsgOut, &infoMsgIn, sizeof(QUIInfoMsg));
@@ -1077,8 +1108,20 @@ static void Camera_Task(void *param)
 
                 case QMSG_PXP_FACEREC:
                 {
-                	uint32_t mask = (1UL<<IR_CAMERA) |(1UL<<COLOR_CAMERA);
-                	oasis_frames_ready |= 1UL<<(uint32_t)pQMsg->msg.pxp.user_data;
+                    uint32_t mask;
+                    if (s_appType == APP_TYPE_USERID || s_appType == APP_TYPE_DOOR_ACCESS_LIGHT_SINGLE || s_appType == APP_TYPE_DOOR_ACCESS_HEAVY_SINGLE)
+                    {
+                        mask = (1UL<<COLOR_CAMERA);
+                    }
+                    else if (s_appType == APP_TYPE_ELOCK_LIGHT_SINGLE || s_appType == APP_TYPE_ELOCK_HEAVY_SINGLE)
+                    {
+                        mask = (1UL<<IR_CAMERA);
+                    }
+                    else // dual camera application
+                    {
+                        mask = (1UL<<IR_CAMERA) | (1UL<<COLOR_CAMERA);
+                    }
+                    oasis_frames_ready |= 1UL<<(uint32_t)pQMsg->msg.pxp.user_data;
                     if ((oasis_frames_ready&mask) == mask)
                     {
                         Camera_SendFResMsg();
@@ -1127,7 +1170,7 @@ static void Camera_Task(void *param)
                     }
                     else if(pQMsg->msg.cmd.id == QCMD_CHANGE_RGB_EXPOSURE_MODE)
                     {
-                    	s_CurRGBExposureMode = pQMsg->msg.cmd.data.exposure_mode;
+                        s_CurExposureMode[COLOR_CAMERA] = pQMsg->msg.cmd.data.exposure_mode;
                     }
 					else if (pQMsg->msg.cmd.id == QCMD_CHANGE_INFO_DISP_MODE)
                     {

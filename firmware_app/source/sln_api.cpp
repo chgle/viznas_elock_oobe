@@ -217,7 +217,7 @@ vizn_api_status_t VIZN_UnregisterClient(VIZN_api_handle_t apiHandle, VIZN_api_cl
         return kStatus_API_Layer_Success;
 }
 
-vizn_api_status_t VIZN_GetRegisteredUsers(VIZN_api_client_t *clientHandle, std::vector<std::string> *nameList, int count)
+vizn_api_status_t VIZN_GetRegisteredUsers(VIZN_api_client_t *clientHandle, std::vector<std::string> &nameList, int count)
 {
     uint8_t status = DB_GetNames(nameList,count);
     if (status < 0)
@@ -747,6 +747,36 @@ vizn_api_status_t VIZN_SetLowPowerMode(VIZN_api_client_t *clientHandle, cfg_lowp
 vizn_api_status_t VIZN_GetLowPowerMode(VIZN_api_client_t *clientHandle, cfg_lowpower_t *mode)
 {
     *mode = (cfg_lowpower_t)Cfg_AppDataGetLowPowerMode();
+    return kStatus_API_Layer_Success;
+}
+
+vizn_api_status_t VIZN_SetAlgoStartMode(VIZN_api_client_t *clientHandle, cfg_algo_start_mode_t mode)
+{
+    uint32_t status;
+    sln_cfg_data_t cfg;
+    Cfg_Lock();
+    Cfg_AppDataRead(&cfg);
+    if (cfg.algo_start_mode == mode)
+    {
+        Cfg_Unlock();
+        return kStatus_API_Layer_SetAlgoStartMode_Same;
+    }
+    else
+    {
+        cfg.algo_start_mode = (uint8_t)mode;
+        status             = Cfg_AppDataSave(&cfg);
+    }
+    Cfg_Unlock();
+    if (SLN_FLASH_MGMT_OK != status)
+    {
+        return kStatus_API_Layer_SetAlgoStartMode_SaveFailed;
+    }
+    return kStatus_API_Layer_Success;
+}
+
+vizn_api_status_t VIZN_GetAlgoStartMode(VIZN_api_client_t *clientHandle, cfg_algo_start_mode_t *mode)
+{
+    *mode = (cfg_algo_start_mode_t)Cfg_AppDataGetAlgoStartMode();
     return kStatus_API_Layer_Success;
 }
 

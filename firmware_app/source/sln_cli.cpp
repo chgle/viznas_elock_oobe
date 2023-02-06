@@ -18,6 +18,7 @@
 #include "sln_dev_cfg.h"
 #include "sln_api.h"
 #include "sln_connection.h"
+#include "face_rec_rt_info.h"
 /*******************************************************************************
  * Prototypes
  *******************************************************************************/
@@ -88,7 +89,14 @@ static shell_status_t FFI_CLI_AppCommand(shell_handle_t shellContextHandle,
 
 static shell_status_t FFI_CLI_LowPowerCommand(shell_handle_t shellContextHandle,
                                               int32_t argc,
-                                              char **argv); /*!< App command */
+                                              char **argv); /*!< Low Power command */
+
+static shell_status_t FFI_CLI_AlgoStartCommand(shell_handle_t shellContextHandle,
+                                              int32_t argc,
+                                              char **argv); /*!< Algo Start command */
+static shell_status_t _RtInfoCommand(shell_handle_t shellContextHandle,
+                                              int32_t argc,
+                                              char **argv); /*!< RtInfo command */
 
 extern "C" {
 
@@ -161,15 +169,22 @@ SHELL_COMMAND_DEFINE(wifi, (char *)"\r\n\"wifi <on|off>\":  Turn the Wi-Fi conne
         							  "\r\n\"wifi credentials SSID [PASSWORD]\": Set Wi-Fi credentials.\r\n"
                                       "\r\n\"wifi ip\": Get the ip address. \r\n"
                                       "\r\n\"wifi erase\": Erase the Wi-Fi credentials from flash\r\n", FFI_CLI_WiFiCommand, SHELL_IGNORE_PARAMETER_COUNT);
-SHELL_COMMAND_DEFINE(app_type, (char *)"\r\n\"app_type <0|1|2|3|4>\":\r\n "
-                                        "0 - Elock(light)\r\n"
-                                        "1 - Elock(heavy)\r\n"
-                                        "2 - Door access(light)\r\n"
-                                        "3 - Door access(heavy)\r\n"
-                                        "4 - Userid \r\n", FFI_CLI_AppCommand, SHELL_IGNORE_PARAMETER_COUNT);
+SHELL_COMMAND_DEFINE(app_type, (char *)"\r\n\"app_type <0|1|2|3|4|5|6|7|8>\":\r\n "
+                                        "0 - Elock(light)dual\r\n"
+                                        "1 - Elock(heavy)dual\r\n"
+                                        "2 - Door access(light)dual\r\n"
+                                        "3 - Door access(heavy)dual\r\n"
+                                        "4 - Elock(light)single\r\n"
+                                        "5 - Elock(heavy)single\r\n"
+                                        "6 - Door access(light)single\r\n"
+                                        "7 - Door access(heavy)single\r\n"
+                                        "8 - Userid \r\n", FFI_CLI_AppCommand, SHELL_IGNORE_PARAMETER_COUNT);
 SHELL_COMMAND_DEFINE(low_power, (char *)"\r\n\"low_power <on|off>\":  Turn low power mode on|off\r\n", FFI_CLI_LowPowerCommand, SHELL_IGNORE_PARAMETER_COUNT);
+SHELL_COMMAND_DEFINE(algo_start, (char *)"\r\n\"algo_start <auto|manual>\":  Set algo start mode auto|manual\r\n", FFI_CLI_AlgoStartCommand, SHELL_IGNORE_PARAMETER_COUNT);
 
-extern QueueHandle_t g_UsbShellQueue;
+SHELL_COMMAND_DEFINE(rtinfo, (char *)"\r\n\"rtinfo\": runtime information filter\r\n", _RtInfoCommand, SHELL_IGNORE_PARAMETER_COUNT);
+
+extern QueueHandle_t g_ShellQueue;
 extern VIZN_api_handle_t gApiHandle;
 extern VIZN_api_client_t VIZN_API_CLIENT(Shell);
 //extern std::string g_AddNewFaceName;
@@ -197,17 +212,19 @@ shell_status_t RegisterFFICmds(shell_handle_t shellContextHandle)
     SHELL_RegisterCommand(shellContextHandle, SHELL_COMMAND(wifi));
     SHELL_RegisterCommand(shellContextHandle, SHELL_COMMAND(app_type));
     SHELL_RegisterCommand(shellContextHandle, SHELL_COMMAND(low_power));
+    SHELL_RegisterCommand(shellContextHandle, SHELL_COMMAND(algo_start));
+    SHELL_RegisterCommand(shellContextHandle, SHELL_COMMAND(rtinfo));
     return kStatus_SHELL_Success;
 }
 
-static shell_status_t UsbShell_QueueSendFromISR(shell_handle_t shellContextHandle,
+static shell_status_t Shell_QueueSendFromISR(shell_handle_t shellContextHandle,
                                                 int32_t argc,
                                                 char **argv,
                                                 char shellCommand)
 {
-    UsbShellCmdQueue_t queueMsg;
+    ShellCmdQueue_t queueMsg;
 
-    if (argc > USB_SHELL_PARAMS_COUNT)
+    if (argc > SHELL_PARAMS_COUNT)
     {
         SHELL_Printf(shellContextHandle, "Parameters count overflow\r\n");
         return kStatus_SHELL_Error;
@@ -215,7 +232,7 @@ static shell_status_t UsbShell_QueueSendFromISR(shell_handle_t shellContextHandl
 
     for (int i = 0; i < argc; i++)
     {
-        if (strlen(argv[i]) < USB_SHELL_PARAMS_SIZE)
+        if (strlen(argv[i]) < SHELL_PARAMS_SIZE)
         {
             strcpy(queueMsg.argv[i], argv[i]);
         }
@@ -229,7 +246,7 @@ static shell_status_t UsbShell_QueueSendFromISR(shell_handle_t shellContextHandl
     queueMsg.shellContextHandle = shellContextHandle;
     queueMsg.shellCommand       = shellCommand;
 
-    if (pdTRUE != xQueueSendFromISR(g_UsbShellQueue, (void *)&queueMsg, NULL))
+    if (pdTRUE != xQueueSendFromISR(g_ShellQueue, (void *)&queueMsg, NULL))
     {
         SHELL_Printf(shellContextHandle, "ERROR: Cannot send command to shell processing queue\r\n");
         return kStatus_SHELL_Error;
@@ -246,7 +263,7 @@ static shell_status_t FFI_CLI_ListCommand(shell_handle_t shellContextHandle, int
         return kStatus_SHELL_Error;
     }
 
-    return UsbShell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_LIST);
+    return Shell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_LIST);
 }
 
 static shell_status_t FFI_CLI_AddCommand(shell_handle_t shellContextHandle, int32_t argc, char **argv)
@@ -257,7 +274,7 @@ static shell_status_t FFI_CLI_AddCommand(shell_handle_t shellContextHandle, int3
         return kStatus_SHELL_Error;
     }
 
-    return UsbShell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_ADD);
+    return Shell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_ADD);
 }
 
 static shell_status_t FFI_CLI_DelCommand(shell_handle_t shellContextHandle, int32_t argc, char **argv)
@@ -268,7 +285,7 @@ static shell_status_t FFI_CLI_DelCommand(shell_handle_t shellContextHandle, int3
         return kStatus_SHELL_Error;
     }
 
-    return UsbShell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_DEL);
+    return Shell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_DEL);
 }
 
 static shell_status_t FFI_CLI_RenCommand(shell_handle_t shellContextHandle, int32_t argc, char **argv)
@@ -279,7 +296,7 @@ static shell_status_t FFI_CLI_RenCommand(shell_handle_t shellContextHandle, int3
         return kStatus_SHELL_Error;
     }
 
-    return UsbShell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_RENAME);
+    return Shell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_RENAME);
 }
 
 static shell_status_t FFI_CLI_Verbose(shell_handle_t shellContextHandle, int32_t argc, char **argv)
@@ -298,7 +315,7 @@ static shell_status_t FFI_CLI_Verbose(shell_handle_t shellContextHandle, int32_t
     }
     else
     {
-        return UsbShell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_VERBOSE);
+        return Shell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_VERBOSE);
     }
 }
 
@@ -310,12 +327,12 @@ static shell_status_t FFI_CLI_SaveCommand(shell_handle_t shellContextHandle, int
         return kStatus_SHELL_Error;
     }
 
-    return UsbShell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_SAVE);
+    return Shell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_SAVE);
 }
 
 static shell_status_t FFI_CLI_ResetCommand(shell_handle_t shellContextHandle, int32_t argc, char **argv)
 {
-    return UsbShell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_RESET);
+    return Shell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_RESET);
 }
 
 static shell_status_t FFI_CLI_DetResolutionCommand(shell_handle_t shellContextHandle, int32_t argc, char **argv)
@@ -334,13 +351,13 @@ static shell_status_t FFI_CLI_DetResolutionCommand(shell_handle_t shellContextHa
     }
     else
     {
-        return UsbShell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_DET_RESOLUTION);
+        return Shell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_DET_RESOLUTION);
     }
 }
 
 static shell_status_t FFI_CLI_CameraCommand(shell_handle_t shellContextHandle, int32_t argc, char **argv)
 {
-    return UsbShell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_CAMERA);
+    return Shell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_CAMERA);
 }
 
 static shell_status_t FFI_CLI_VersionCommand(shell_handle_t shellContextHandle, int32_t argc, char **argv)
@@ -350,22 +367,22 @@ static shell_status_t FFI_CLI_VersionCommand(shell_handle_t shellContextHandle, 
         SHELL_Printf(shellContextHandle, "Version command has no arguments\r\n");
         return kStatus_SHELL_Error;
     }
-    return UsbShell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_VERSION);
+    return Shell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_VERSION);
 }
 
 static shell_status_t FFI_CLI_FwUpdateOTW(shell_handle_t shellContextHandle, int32_t argc, char **argv)
 {
-    return UsbShell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_FWUPDATE_OTW);
+    return Shell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_FWUPDATE_OTW);
 }
 
 static shell_status_t FFI_CLI_EmotionTypes(shell_handle_t shellContextHandle, int32_t argc, char **argv)
 {
-    return UsbShell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_EMOTION_TYPES);
+    return Shell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_EMOTION_TYPES);
 }
 
 static shell_status_t FFI_CLI_LivenessCommand(shell_handle_t shellContextHandle, int32_t argc, char **argv)
 {
-    return UsbShell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_LIVENESS);
+    return Shell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_LIVENESS);
 }
 
 static shell_status_t FFI_CLI_DisplayCommand(shell_handle_t shellContextHandle, int32_t argc, char **argv)
@@ -397,7 +414,7 @@ static shell_status_t FFI_CLI_DisplayCommand(shell_handle_t shellContextHandle, 
             return kStatus_SHELL_Success;
         }
     }
-    return UsbShell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_DISPLAY);
+    return Shell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_DISPLAY);
 }
 
 
@@ -412,7 +429,7 @@ static shell_status_t FFI_CLI_WiFiCommand(shell_handle_t shellContextHandle, int
     if (argc == 2)
     {
         if (!strcmp((char *)argv[1], "credentials"))
-            return UsbShell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_WIFI_CREDENTIALS);
+            return Shell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_WIFI_CREDENTIALS);
 
         if (!strcmp((char *)argv[1], "ip"))
         {
@@ -424,10 +441,10 @@ static shell_status_t FFI_CLI_WiFiCommand(shell_handle_t shellContextHandle, int
             return kStatus_SHELL_Error;
         }
         if (!strcmp((char *)argv[1], "erase"))
-            return UsbShell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_WIFI_ERASE);
+            return Shell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_WIFI_ERASE);
 
         if (!strcmp((char *)argv[1], "on") || !strcmp((char *)argv[1], "off") || !strcmp((char *)argv[1], "reset"))
-            return UsbShell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_WIFI);
+            return Shell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_WIFI);
     }
 
     if (!strcmp((char *)argv[1], "credentials") && argc != 4)
@@ -437,7 +454,7 @@ static shell_status_t FFI_CLI_WiFiCommand(shell_handle_t shellContextHandle, int
     }
     else if (!strcmp((char *)argv[1], "credentials"))
     {
-        return UsbShell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_WIFI_CREDENTIALS);
+        return Shell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_WIFI_CREDENTIALS);
     }
 
     SHELL_Printf(shellContextHandle, "Wrong command for wi-fi\r\n");
@@ -446,17 +463,25 @@ static shell_status_t FFI_CLI_WiFiCommand(shell_handle_t shellContextHandle, int
 
 static shell_status_t FFI_CLI_AppCommand(shell_handle_t shellContextHandle, int32_t argc, char **argv)
 {
-    return UsbShell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_APP);
+    return Shell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_APP);
 }
 
 static shell_status_t FFI_CLI_LowPowerCommand(shell_handle_t shellContextHandle,
                                         int32_t argc,
                                         char **argv)
 {
-    return UsbShell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_LOW_POWER);
+    return Shell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_LOW_POWER);
 }
 
-void UsbShell_CmdProcess_Task(void *arg)
+static shell_status_t FFI_CLI_AlgoStartCommand(shell_handle_t shellContextHandle,
+                                        int32_t argc,
+                                        char **argv)
+{
+    return Shell_QueueSendFromISR(shellContextHandle, argc, argv, SHELL_EV_FFI_CLI_ALGO_START);
+}
+
+
+void Shell_CmdProcess_Task(void *arg)
 {
     vTaskDelay(portTICK_PERIOD_MS * 1000);
     SHELL_Printf(usb_shellHandle[USB_SHELL_PROMPT_INDEX], "Type \"help\" to see what this shell can do!\r\n");
@@ -465,8 +490,8 @@ void UsbShell_CmdProcess_Task(void *arg)
     while (1)
     {
         vizn_api_status_t status;
-        UsbShellCmdQueue_t queueMsg;
-        xQueueReceive(g_UsbShellQueue, &queueMsg, portMAX_DELAY);
+        ShellCmdQueue_t queueMsg;
+        xQueueReceive(g_ShellQueue, &queueMsg, portMAX_DELAY);
 
         shell_handle_t shellContextHandle = queueMsg.shellContextHandle;
         if (queueMsg.shellCommand == SHELL_EV_FFI_CLI_LIST)
@@ -475,7 +500,8 @@ void UsbShell_CmdProcess_Task(void *arg)
             uint32_t namescount;
 
             //get user name, maximum is 100
-            VIZN_GetRegisteredUsers(&VIZN_API_CLIENT(Shell), &names, 100);
+            names.reserve(100);
+            VIZN_GetRegisteredUsers(&VIZN_API_CLIENT(Shell), names, names.capacity());
             namescount = names.size();
 
             SHELL_Printf(shellContextHandle, "Registered users count:%d\r\n", namescount);
@@ -1201,8 +1227,182 @@ void UsbShell_CmdProcess_Task(void *arg)
                 }
             }
         }
+        else if (queueMsg.shellCommand == SHELL_EV_FFI_CLI_ALGO_START)
+        {
+            if (queueMsg.argc == 1)
+            {
+                cfg_algo_start_mode_t cur_mode;
+                uint32_t status = VIZN_GetAlgoStartMode(&VIZN_API_CLIENT(Shell), &cur_mode);
+                if (status == kStatus_API_Layer_Success)
+                {
+                    SHELL_Printf(shellContextHandle, "Algo start mode is %s\r\n",
+                                 (cur_mode == ALGO_START_MODE_AUTO) ? "auto" : "manual");
+                    if (cur_mode == ALGO_START_MODE_MANUAL)
+                    {
+                        VIZN_StartRecognition(&VIZN_API_CLIENT(Shell));
+                        SHELL_Printf(shellContextHandle, "And start Recognition in manual");
+                    }
+                }
+                else
+                {
+                    SHELL_Printf(shellContextHandle, "Algo start mode not supported\r\r");
+                }
+            }
+            else if (queueMsg.argc == 2)
+            {
+                if (!strcmp((char *)queueMsg.argv[1], "auto"))
+                {
+                    status = VIZN_SetAlgoStartMode(&VIZN_API_CLIENT(Shell), ALGO_START_MODE_AUTO);
+                    if (status == kStatus_API_Layer_Success)
+                    {
+                        VIZN_StartRecognition(&VIZN_API_CLIENT(Shell));
+                        SHELL_Printf(shellContextHandle, "Set algo start mode to auto.\r\n");
+                    }
+                    else if (status == kStatus_API_Layer_SetLowPowerMode_Same)
+                    {
+                        SHELL_Printf(shellContextHandle, "Algo start mode is already auto.\r\n");
+                    }
+                    else
+                    {
+                        SHELL_Printf(shellContextHandle, "Cannot save algo start mode\r\n");
+                    }
+                }
+                else if (!strcmp((char *)queueMsg.argv[1], "manual"))
+                {
+                    status = VIZN_SetAlgoStartMode(&VIZN_API_CLIENT(Shell), ALGO_START_MODE_MANUAL);
+                    if (status == kStatus_API_Layer_Success)
+                    {
+                        SHELL_Printf(shellContextHandle, "Set algo start mode to manual.\r\n");
+                    }
+                    else if (status == kStatus_API_Layer_SetLowPowerMode_Same)
+                    {
+                        SHELL_Printf(shellContextHandle, "Algo start mode is already manual.\r\n");
+                    }
+                    else
+                    {
+                        SHELL_Printf(shellContextHandle, "Cannot save algo start mode\r\n");
+                    }
+                }
+                else
+                {
+                    SHELL_Printf(shellContextHandle, "Undefined mode\r\n");
+                }
+            }
+        }
         SHELL_Printf(shellContextHandle, USB_SHELL_PROMPT);
     }
 
     vTaskDelete(NULL);
+}
+
+static shell_status_t _RtInfoCommand(shell_handle_t shellContextHandle, int32_t argc, char **argv)
+{
+    char *pEnd;
+
+    if (argc == 2)
+    {
+        if (!strcmp((char *)argv[1], "size"))
+        {
+            /* print the runtime information start address and size */
+            unsigned char *pStart = NULL;
+            unsigned int size     = 0;
+            FaceRecRtInfo_Size(&pStart, &size);
+            if (pStart && size)
+            {
+                SHELL_Printf(shellContextHandle, "\"%s\" start:0x%x size:0x%x\r\n", argv[1], pStart, size);
+            }
+            return kStatus_SHELL_Success;
+        }
+        else if (!strcmp((char *)argv[1], "clean"))
+        {
+            /* clean the captured runtime information */
+            FaceRecRtInfo_Clean();
+            return kStatus_SHELL_Success;
+        }
+        else if (!strcmp((char *)argv[1], "disable"))
+        {
+            /* disable all the filters */
+            FaceRecRtInfo_Disable();
+            return kStatus_SHELL_Success;
+        }
+        else
+        {
+            SHELL_Printf(shellContextHandle, "Invalid # of parameters supplied\r\n");
+            return kStatus_SHELL_Error;
+        }
+    }
+    else if ((argc == 3) || (argc == 4))
+    {
+        uint32_t tmp;
+        face_rec_rt_info_id_t id = kFaceRecRtInfoId_Count;
+        unsigned char enable     = 0;
+        unsigned char filter     = 0;
+
+        if (!strcmp((char *)argv[1], "global"))
+        {
+            id = kFaceRecRtInfoId_Global;
+        }
+        else if (!strcmp((char *)argv[1], "detect"))
+        {
+            id = kFaceRecRtInfoId_Detect;
+        }
+        else if (!strcmp((char *)argv[1], "fake"))
+        {
+            id = kFaceRecRtInfoId_Fake;
+        }
+        else if (!strcmp((char *)argv[1], "facerec"))
+        {
+            id = kFaceRecRtInfoId_FaceFecognize;
+        }
+        else
+        {
+            tmp = strtol(argv[1], &pEnd, 10);
+            if (argv[1] == pEnd)
+            {
+                SHELL_Printf(shellContextHandle, "\"%s\" invalid item id.\r\n", argv[1]);
+                return kStatus_SHELL_Error;
+            }
+
+            if ((tmp >= kFaceRecRtInfoId_Global) && (tmp < kFaceRecRtInfoId_Count))
+            {
+                id = (face_rec_rt_info_id_t)tmp;
+            }
+        }
+
+        /* check the item id */
+        if (id > kFaceRecRtInfoId_Count)
+        {
+            SHELL_Printf(shellContextHandle, "\"%s\" invalid item id.\r\n", argv[1]);
+            return kStatus_SHELL_Error;
+        }
+
+        tmp = strtol(argv[2], &pEnd, 10);
+        if ((argv[2] == pEnd) || ((tmp != 0) && (tmp != 1)))
+        {
+            SHELL_Printf(shellContextHandle, "\"%s\" invalid enable flag.\r\n", argv[2]);
+            return kStatus_SHELL_Error;
+        }
+        enable = (unsigned char)tmp;
+
+        if (argc == 4)
+        {
+            tmp = strtol(argv[3], &pEnd, 10);
+            if ((argv[3] == pEnd) || ((tmp != 0) && (tmp != 1) && (tmp != 2)))
+            {
+                SHELL_Printf(shellContextHandle, "\"%s\" invalid enable flag.\r\n", argv[3]);
+                return kStatus_SHELL_Error;
+            }
+            filter = tmp;
+        }
+
+        SHELL_Printf(shellContextHandle, "id:0x%02x enable:%d filter:%d\r\n", id, enable, filter);
+        FaceRecRtInfo_Filter(id, enable, filter);
+    }
+    else
+    {
+        SHELL_Printf(shellContextHandle, "Invalid # of parameters supplied\r\n");
+        return kStatus_SHELL_Error;
+    }
+
+    return kStatus_SHELL_Success;
 }
